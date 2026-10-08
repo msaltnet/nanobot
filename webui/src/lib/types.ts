@@ -576,6 +576,11 @@ export interface RuntimeCapabilities {
   can_export_diagnostics: boolean;
 }
 
+export interface ModelAPIConfig {
+  supported_apis: Array<"chat_completions" | "responses">;
+  preferred_api?: "chat_completions" | "responses" | null;
+}
+
 interface ProviderModelInfo {
   id: string;
   label?: string | null;
@@ -584,6 +589,7 @@ interface ProviderModelInfo {
   context_window?: number | null;
   reasoning_efforts?: string[];
   supports_backend_search?: boolean;
+  api?: ModelAPIConfig | null;
 }
 
 export interface ProviderModelsPayload {
@@ -653,6 +659,7 @@ export interface SettingsPayload {
     context_window_tokens: number;
     temperature: number;
     reasoning_effort: string | null;
+    api?: ModelAPIConfig | null;
     timezone: string;
     tool_hint_max_length: number;
   };
@@ -670,6 +677,7 @@ export interface SettingsPayload {
     temperature: number;
     reasoning_effort: string | null;
     reasoning_effort_values?: string[];
+    api?: ModelAPIConfig | null;
   }>;
   model_call_order: string[];
   model_call_order_editable: boolean;
@@ -689,6 +697,7 @@ export interface SettingsPayload {
     default_api_base?: string | null;
     model_selectable?: boolean;
     model_catalog?: ProviderModelsPayload["catalog_kind"];
+    model_api_configurable?: boolean;
     api_type?: "auto" | "chat_completions" | "responses";
     oauth_account?: string | null;
     oauth_expires_at?: number | null;
@@ -1288,6 +1297,7 @@ export interface ModelConfigurationCreate {
   contextWindowTokens?: number;
   temperature?: number;
   reasoningEffort?: string | null;
+  api?: ModelAPIConfig | null;
 }
 
 export interface ModelConfigurationUpdate {
@@ -1299,6 +1309,7 @@ export interface ModelConfigurationUpdate {
   contextWindowTokens?: number;
   temperature?: number;
   reasoningEffort?: string | null;
+  api?: ModelAPIConfig | null;
 }
 
 export interface ProviderSettingsUpdate {

@@ -1135,7 +1135,7 @@ export async function fetchSidebarState(
 function modelGenerationSettingsPayload(
   configuration: Pick<
     ModelConfigurationCreate,
-    "maxTokens" | "contextWindowTokens" | "temperature" | "reasoningEffort"
+    "maxTokens" | "contextWindowTokens" | "temperature" | "reasoningEffort" | "api"
   >,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
@@ -1150,6 +1150,9 @@ function modelGenerationSettingsPayload(
   }
   if (configuration.reasoningEffort !== undefined) {
     payload.reasoning_effort = configuration.reasoningEffort ?? "";
+  }
+  if (configuration.api !== undefined) {
+    payload.api = configuration.api;
   }
   return payload;
 }
