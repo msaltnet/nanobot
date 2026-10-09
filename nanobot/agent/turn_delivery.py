@@ -9,9 +9,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from nanobot.agent.tools.delivery_control import current_turn_delivery_control
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.notification_delivery import notification_is_deliverable
 from nanobot.bus.outbound_events import (
+    ProgressEvent,
     RetryStatusEvent,
     StreamDeltaEvent,
     StreamedResponseEvent,
@@ -302,12 +304,14 @@ class TurnDelivery:
             stop_reason = cast(str | None, response.metadata.get("_stop_reason"))
         completed_channel = self.lifecycle_message.channel
         completed_chat_id = self.lifecycle_message.chat_id
+        if stop_reason == "delivery_owned":
+            response = None
         if response is not None:
             completed_channel = response.channel
             completed_chat_id = response.chat_id
             if response.channel != "websocket" or stop_reason != "error":
                 await self.bus.publish_outbound(response)
-        elif self.lifecycle_message.channel == "cli":
+        elif self.lifecycle_message.channel == "cli" and stop_reason != "delivery_owned":
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=self.lifecycle_message.channel,
@@ -334,6 +338,9 @@ class TurnDelivery:
             )
 
     async def fail(self, *, publish_completion: bool) -> None:
+        if self._stop_reason == "delivery_owned":
+            await self.complete(None, publish_completion=publish_completion)
+            return
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel=self.lifecycle_message.channel,
@@ -365,6 +372,21 @@ class TurnDelivery:
         return f"{self._stream_base_id}:{self._stream_segment}"
 
     async def _publish_event(self, event: AgentEvent) -> None:
+        # Tool hints and lifecycle signals are not content delivery. Actual text
+        # must arbitrate before it reaches the bus, including provider streaming.
+        content_event = isinstance(event, StreamDeltaEvent | StreamEndEvent | ProgressEvent)
+        if content_event and event.content and not (
+            isinstance(event, ProgressEvent) and event.tool_hint
+        ):
+            control = current_turn_delivery_control()
+            thread = self.route.metadata.get("message_thread_id", self.route.metadata.get("thread_id"))
+            if self._stop_reason == "delivery_owned" or (
+                control is not None and not control.begin_generic_delivery(
+                    channel=self.route.channel, chat_id=self.route.chat_id,
+                    thread_id=str(thread) if thread is not None else None,
+                )
+            ):
+                return
         if isinstance(event, RetryStatusEvent):
             self._retry_status = event if event.state == "exhausted" else None
         if isinstance(event, StreamDeltaEvent | StreamEndEvent):
