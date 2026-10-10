@@ -37,6 +37,12 @@ from nanobot.agent.runner import (
 )
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
+from nanobot.agent.tools.delivery_control import (
+    DELIVERY_OWNED_META,
+    DeliveryOwnership,
+    current_turn_delivery_control,
+    delivery_control_scope,
+)
 from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import capture_message_deliveries
@@ -50,6 +56,7 @@ from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
 from nanobot.bus.events import INBOUND_META_USER_SHELL, InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import (
+    ProgressEvent,
     StreamDeltaEvent,
     StreamedResponseEvent,
     StreamEndEvent,
@@ -1146,7 +1153,28 @@ class AgentLoop:
             )
 
         session_metadata = session.metadata if session is not None else None
+        original_events = events
+
+        async def publish_controlled(event: AgentEvent) -> None:
+            if not original_events.accepts(type(event)):
+                return
+            if isinstance(event, StreamDeltaEvent | StreamEndEvent | ProgressEvent) and event.content:
+                control = current_turn_delivery_control()
+                if control is not None and not (isinstance(event, ProgressEvent) and event.tool_hint):
+                    thread = request_metadata.get("message_thread_id", request_metadata.get("thread_id"))
+                    if not control.begin_generic_delivery(
+                        channel=request_ctx.channel, chat_id=request_ctx.chat_id,
+                        thread_id=str(thread) if thread is not None else None,
+                    ):
+                        return
+            if original_events.publish is not None:
+                await original_events.publish(event)
+
+        if original_events.publish is not None:
+            events = EventSink(publish_controlled, original_events.accepts)
         try:
+            if current_turn_delivery_control() is None:
+                turn_scope_stack.enter_context(delivery_control_scope(request_ctx))
             for scope in turn_scopes or ():
                 turn_scope_stack.enter_context(scope)
             hook = build_agent_turn_hook(AgentTurnHookSpec(
@@ -1977,7 +2005,17 @@ class AgentLoop:
             ctx.visible_run_started_at = time.time()
         await ctx.delivery.running(started_at=ctx.visible_run_started_at)
         assert ctx.transcript_input is not None
-        with capture_message_deliveries() as message_sends:
+        assert ctx.request_context is not None
+
+        def on_claim(ownership: DeliveryOwnership) -> None:
+            ctx.suppress_response = True
+            # Persist the delivery boundary before tool/checkpoint/save code can fail.
+            ctx.delivery.record_stop_reason("delivery_owned")
+            ctx.msg.metadata[DELIVERY_OWNED_META] = ownership.owner_tool
+
+        with capture_message_deliveries() as message_sends, delivery_control_scope(
+            ctx.request_context, on_claim=on_claim,
+        ):
             result = await self._run_agent_loop(
                 ctx.transcript_input,
                 runtime=runtime,
@@ -1994,6 +2032,8 @@ class AgentLoop:
                 provider_state=ctx.provider_state,
                 events=ctx.events,
             )
+        if result.delivery_owned is not None:
+            ctx.suppress_response = True
         ctx.final_content = result.final_content
         ctx.all_messages = result.messages
         ctx.summary_checkpoint = result.summary_checkpoint

@@ -24,6 +24,7 @@ from nanobot.agent.context_governance import (
     TranscriptBuilder,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.tools.delivery_control import DeliveryOwnership, current_turn_delivery_control
 from nanobot.agent.tools.execution import execute_tool_calls
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.events import NO_EVENTS, EventSink
@@ -131,6 +132,7 @@ class AgentRunResult:
     failure_error_kind: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
     had_injections: bool = False
+    delivery_owned: DeliveryOwnership | None = None
     # Terminal tail to emit when the preceding final-content prefix was already streamed.
     pending_stream_content: str | None = None
     provider_state: ProviderConversationState | None = field(default=None, repr=False)
@@ -213,6 +215,9 @@ class AgentRunner:
                 )
         self._append_injected_messages(messages, injections)
         if real_injection:
+            control = current_turn_delivery_control()
+            if control is not None:
+                control.note_accepted_injection()
             logger.info(
                 "Injected {} follow-up message(s) {} ({}/{})",
                 len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
@@ -406,6 +411,7 @@ class AgentRunner:
         # injected user input starts a new logical answer and clears the chain.
         length_recovery_parts: list[str] = []
         had_injections = False
+        delivery_owned: DeliveryOwnership | None = None
         injection_cycles = 0
         pending_stream_content: str | None = None
         conversation_state = ProviderConversationStateController(
@@ -566,6 +572,13 @@ class AgentRunner:
                         ),
                     },
                 )
+                control = current_turn_delivery_control()
+                if control is not None and control.ownership is not None:
+                    delivery_owned = control.ownership
+                    stop_reason = "delivery_owned"
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
                 empty_content_retries = 0
                 length_recovery_parts.clear()
                 # Checkpoint 1: drain injections after tools, before next LLM call
@@ -833,6 +846,7 @@ class AgentRunner:
             failure_error_kind=failure_error_kind,
             tool_events=tool_events,
             had_injections=had_injections,
+            delivery_owned=delivery_owned,
             pending_stream_content=pending_stream_content,
             provider_state=conversation_state.finish(messages),
             summary_checkpoint=(

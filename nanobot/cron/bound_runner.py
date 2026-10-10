@@ -9,6 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Protocol
 
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.delivery_control import DELIVERY_OWNED_META
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.cron.session_delivery import origin_delivery_context
 from nanobot.cron.session_turns import CRON_DEFER_UNTIL_IDLE_META, CRON_TRIGGER_META
@@ -149,6 +150,7 @@ async def run_bound_cron_job(
             **run_record_base,
             "status": "ok",
             "response": response,
+            **({"delivery": "owned"} if metadata.get(DELIVERY_OWNED_META) else {}),
         },
     )
     return CronRunResult(run_id=run_id, response=response)

@@ -11,6 +11,10 @@ from typing import Any, cast
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.tools.delivery_control import (
+    current_turn_delivery_control,
+    delivery_tool_dispatch,
+)
 from nanobot.agent.tools.file_state import file_read_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
 from nanobot.providers.base import ToolCallRequest
@@ -120,6 +124,11 @@ async def _execute_tool_call(
     context: AgentHookContext,
     read_results: Callable[[], dict[str, str]],
 ) -> tuple[Any, dict[str, str]]:
+    control = current_turn_delivery_control()
+    if control is not None and control.ownership is not None:
+        return "Delivery owned; tool skipped", {
+            "name": tool_call.name, "status": "skipped", "detail": "delivery_owned",
+        }
     lookup_error = repeated_external_lookup_error(
         tool_call.name,
         tool_call.arguments,
@@ -164,7 +173,10 @@ async def _execute_tool_call(
 
     await hook.before_execute_tool(context, tool_call, tool, params)
     try:
-        with (
+        with delivery_tool_dispatch(
+            tool_call.name, exclusive=getattr(tool, "exclusive", False) is True,
+            read_only=getattr(tool, "read_only", False) is True,
+        ), (
             file_read_context(tool_call.id, read_results)
             if tool_call.name == "read_file" else nullcontext()
         ):
@@ -173,6 +185,10 @@ async def _execute_tool_call(
             else:
                 result = await tools.execute(tool_call.name, params)
     except asyncio.CancelledError:
+        if control is not None and control.ownership is not None:
+            return "Delivery owned; execution cancelled", {
+                "name": tool_call.name, "status": "cancelled", "detail": "delivery_owned",
+            }
         raise
     except Exception as exc:
         await hook.on_execute_tool_error(context, tool_call, tool, params, exc)
@@ -303,7 +319,7 @@ def _partition_tool_batches(
     for tool_call in tool_calls:
         get_tool = cast(Callable[[str], Any] | None, getattr(tools, "get", None))
         tool = get_tool(tool_call.name) if callable(get_tool) else None
-        can_batch = bool(tool and tool.concurrency_safe)
+        can_batch = bool(tool and tool.concurrency_safe and not getattr(tool, "exclusive", False))
         if can_batch:
             current.append(tool_call)
             continue

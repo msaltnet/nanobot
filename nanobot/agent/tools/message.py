@@ -12,6 +12,7 @@ from loguru import logger
 
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import ToolContext, current_request_context
+from nanobot.agent.tools.delivery_control import current_turn_delivery_control
 from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
@@ -246,6 +247,14 @@ class MessageTool(Tool):
         if self._suppress_delivery_var.get():
             logger.debug("MessageTool: delivery suppressed during internal check")
             return f"Message acknowledged for {channel}:{chat_id} (not delivered)"
+
+        control = current_turn_delivery_control()
+        thread = metadata.get("message_thread_id", metadata.get("thread_id"))
+        if control is not None and not control.begin_generic_delivery(
+            channel=channel, chat_id=chat_id,
+            thread_id=str(thread) if thread is not None else None,
+        ):
+            return ToolResult.error("Delivery owned; generic message suppressed (not delivered)")
 
         try:
             await self._send_callback(msg)
